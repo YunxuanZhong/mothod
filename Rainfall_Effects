@@ -1,0 +1,108 @@
+# Load necessary libraries
+library(readr)
+library(ggplot2)
+library(readxl)
+library(gridExtra)
+library(corrplot)
+library(tidyverse)
+
+# Set working directory and read data
+setwd("C:\\Users\\86159\\Desktop\\data")
+
+# Read PHKO CSV data
+data_rain <- read_csv("PHKO.2023-09-14.csv")
+data_rain <- data.frame(
+  timestamp = data_rain$`...2`[441459:582381],
+  precipitation = data_rain$`...6`[441459:582381]
+)
+data_rain$timestamp <- as.POSIXct(data_rain$timestamp, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+data_rain$precipitation[is.na(data_rain$precipitation)] <- 0
+
+# Plot the precipitation data
+rain_plot <- ggplot(data_rain, aes(x = timestamp, y = precipitation)) +
+  geom_line() +
+  labs(title = "Precipitation Time Series", x = "Timestamp", y = "Precipitation (mm)") +
+  theme_minimal()
+
+# Read QLT Excel data
+data_qlt <- read_excel("QLT_sniffer_19-21.xlsx", sheet = "Sheet1 (2)", skip = 2)
+data_qlt <- data_qlt[, c(27, 28, 30)]
+colnames(data_qlt) <- c("timestamp", "water_level", "salinity")
+
+# Convert unit of water_level
+data_qlt$water_level <- (data_qlt$water_level - 1050) / 100
+data_qlt$timestamp <- as.POSIXct(data_qlt$timestamp, format="%m/%d/%y %H:%M")
+data_qlt <- na.omit(data_qlt)
+
+# Plot the water level trend
+water_plot <- ggplot(data_qlt, aes(x=timestamp, y=water_level)) +
+  geom_line(color="blue") +
+  labs(title="Water Level over Time", y="Water Level (m)", x="Timestamp") +
+  theme_minimal()
+
+# Plot the salinity trend
+salinity_plot <- ggplot(data_qlt, aes(x=timestamp, y=salinity)) +
+  geom_line(color="red") +
+  labs(title="Salinity over Time", y="Salinity (‰)", x="Timestamp") +
+  theme_minimal()
+
+library(gridExtra)
+
+# Display the three plots vertically
+grid.arrange(rain_plot, water_plot, salinity_plot, nrow=3)
+
+# Create a 'grob' without plotting immediately
+combined_plot <- arrangeGrob(rain_plot, water_plot, salinity_plot, nrow=3)
+
+# Save 'grob' as an image
+ggsave("combined_plot.png", combined_plot, width=10, height=15)
+
+# Mark if within the rain window
+data_qlt$rain=0
+
+for (i in 1:nrow(data_rain)) {
+  
+  if(data_rain$precipitation[i]!=0){
+    
+    data_qlt$rain[which((data_qlt$timestamp>data_rain$timestamp[i])&(data_qlt$timestamp<data_rain$timestamp[i]+48*60*60))]=1
+    
+  }
+  
+}
+
+sum(data_qlt$rain) # Amount of data within the rain window
+
+# Calculate historical 48-hour precipitation
+data_qlt$precipitation_48h=0
+
+for (i in 1:nrow(data_qlt)) {
+  
+  data_qlt$precipitation_48h[i]=sum(data_rain$precipitation[which((data_rain$timestamp<data_qlt$timestamp[i])&(data_rain$timestamp>data_qlt$timestamp[i]-48*60*60))])
+  
+}
+
+data_qlt$rate=data_qlt$salinity/data_qlt$water_level # Calculate ratio
+
+cor_matrix=cor(data_qlt[,2:6])
+corrplot(cor_matrix)
+# Correlation plot: Red for negative correlation, blue for positive correlation, color and size represent correlation strength
+# Strong negative correlation between ratio and water level, positive correlation between ratio and salinity but not strong.
+# No obvious association between rain and ratio can be seen from the correlation plot.
+
+data_qlt$rain=as.factor(data_qlt$rain)
+
+levels(data_qlt$rain)=c("No","Yes")
+
+ggplot(data_qlt, aes(x=timestamp, y=rate,group=rain,colour=rain)) +
+  geom_line() +
+  labs(title="Change in the ratio of rain", y="Ratio", x="Timestamp") +
+  theme_minimal()
+# Ratio time series plot, differentiated by color depending on whether it is within the rain window
+
+ggplot (data = data_qlt,aes (x = water_level, y = salinity, colour = rain))+
+  geom_point (size = 5, shape =18, alpha = 0.5)+
+  labs(title="Scatter plot of salinity and water level", y="Salinity", x="Water Level") +
+  theme_minimal()
+# Scatter plot of salinity and water level, differentiated by color depending on whether it is within the rain window
+
+# Box plot, no clear difference observed
