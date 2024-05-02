@@ -1,0 +1,125 @@
+# Load necessary libraries
+library(readxl)
+library(pracma)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# Set working directory and read Excel file data
+setwd("C:\\Users\\86159\\Desktop\\data")
+file_path <- "tiderecord.xlsx"
+tide_data <- read_excel(file_path, range = "A1:C463")
+
+# Merge date and time columns to create a timestamp
+tide_data$timestamp <- as.POSIXct(paste(tide_data[[1]], format(tide_data[[2]], format = "%H:%M")), format = "%Y-%m-%d %H:%M")
+
+# Perform FFT analysis directly
+tide_height <- tide_data[[3]]
+fft_tide_direct <- fft(tide_height - mean(tide_height)) # Subtract mean
+
+# Calculate normalized frequencies
+n <- length(tide_height)
+frequencies <- seq(0, 0.5, length.out = n/2)
+
+# Create plot data
+plot_data <- data.frame(
+  Frequency = frequencies,
+  Magnitude = Mod(fft_tide_direct)[1:(n/2)]
+)
+
+# Identify the positions of the top peaks
+top_n <- 5
+peaks_tide_indices <- order(-plot_data$Magnitude)[1:top_n]
+peak_data <- data.frame(
+  Frequency = frequencies[peaks_tide_indices],
+  Magnitude = Mod(fft_tide_direct)[peaks_tide_indices]
+)
+
+# Output top periods for tide height in hours
+cat("Top periods for Tide Height (in hours):", 1/peak_data$Frequency, "\n")
+
+# Plot frequency analysis of tide height
+ggplot(plot_data, aes(x = Frequency, y = Magnitude)) + 
+  geom_line(color = "blue") +
+  geom_point(data = peak_data, aes(x = Frequency, y = Magnitude), color = "red", size = 3) +
+  geom_text_repel(data = peak_data, 
+                  aes(label = sprintf("%.2f", 1/Frequency), x = Frequency, y = Magnitude), 
+                  nudge_x = ifelse(peak_data$Frequency > median(peak_data$Frequency), 0.02, -0.02),
+                  box.padding = 0.5, point.padding = 0.5, segment.size = 0.2) +
+  labs(title = "Frequency Analysis of Tide Height", x = "Normalized Frequency (cycles per time step)", y = "Magnitude") +
+  theme_minimal() +
+  coord_cartesian(xlim = c(0, 0.2))  # Limit x-axis range to 0.3
+
+# Read another Excel file
+data <- read_excel("Radon.xlsx")
+names(data) <- c("time_1", "radon_concentration", "salinity", "water_level")
+
+# Downsample salinity and water level data by taking an average every four data points
+salinity_downsampled <- sapply(seq(1, length(data$salinity), 4), function(i) mean(data$salinity[i:(i+3)], na.rm = TRUE))
+water_level_downsampled <- sapply(seq(1, length(data$water_level), 4), function(i) mean(data$water_level[i:(i+3)], na.rm = TRUE))
+
+# Ensure aligned lengths for further analysis
+min_length <- min(length(tide_height), length(salinity_downsampled), length(water_level_downsampled))
+
+# Align time stamps
+timestamp_aligned <- tide_data$timestamp[1:min_length]
+
+# Create new dataframe with aligned data
+final_data <- data.frame(
+  timestamp = timestamp_aligned,
+  tide_height = tide_height[1:min_length],
+  salinity = salinity_downsampled[1:min_length],
+  water_level = water_level_downsampled[1:min_length]
+)
+
+# Plot original water level and tide height on a dual-axis plot
+png("Water_level_and_tide_height.png", width = 1200, height = 600, res = 100)
+plot(final_data$timestamp, final_data$water_level, type='l', col='red', 
+     xlab='Time', ylab='Water Level', main='Water Level and Tide Height')
+grid(nx = NULL, ny = NULL, col = "lightgray", lty = "dotted")
+par(new = TRUE)
+plot(final_data$timestamp, final_data$tide_height, type='n', col='blue', 
+     xlab='', ylab='', axes=FALSE)
+axis(side=4, at=pretty(range(final_data$tide_height)))
+mtext("Tide Height", side=4, line=2)
+lines(final_data$timestamp, final_data$tide_height, col='blue')
+legend("topright", legend=c("Water Level", "Tide Height"), col=c("red", "blue"), lty=1, bty="n")
+dev.off()
+
+# Analyze cross-correlation between water level and tide height
+cross_correlation <- ccf(final_data$tide_height, final_data$water_level, lag.max=3, plot=TRUE)
+
+# Calculate and adjust water level data based on the found time lag
+max_lag <- which.max(abs(cross_correlation$acf))
+adjusted_water_level <- if (cross_correlation$lag[max_lag] > 0) {
+  c(rep(NA, cross_correlation$lag[max_lag]), final_data$water_level[1:(length(final_data$water_level) - cross_correlation$lag[max_lag])])
+} else {
+  c(final_data$water_level[(-cross_correlation$lag[max_lag] + 1):length(final_data$water_level)], rep(NA, -cross_correlation$lag[max_lag]))
+}
+
+# Calculate differences and their ratios for tide and adjusted water level
+diff_adjusted_water_level <- diff(adjusted_water_level)
+diff_tide <- diff(final_data$tide_height)
+ratios_adjusted <- diff_adjusted_water_level / diff_tide
+
+# Compute average attenuation ratio adjusted for time lag during tide rising
+average_attenuation_ratio_adjusted <- mean(ratios_adjusted, na.rm=TRUE)
+cat("Average Attenuation Ratio with Time Lag Adjustment during Tide Rising:", average_attenuation_ratio_adjusted, "\n")
+
+# Calculate correlations and cross-correlations for salinity and water level with tide height
+cor_salinity_tide <- cor(final_data$salinity, final_data$tide_height)
+cor_water_level_tide <- cor(final_data$water_level, final_data$tide_height)
+cat("Correlation between Downsampled Salinity and Tide Height:", cor_salinity_tide, "\n")
+cat("Correlation between Downsampled Water Level and Tide Height:", cor_water_level_tide, "\n")
+ccf_salinity <- ccf(final_data$salinity, final_data$tide_height, plot=FALSE)
+ccf_water_level <- ccf(final_data$water_level, final_data$tide_height, plot=FALSE)
+
+# Output maximum correlation coefficients and their lags
+max_coeff_salinity <- max(ccf_salinity$acf)
+lag_at_max_salinity <- ccf_salinity$lag[which.max(ccf_salinity$acf)]
+cat("Max Correlation between Salinity and Tide Height:", max_coeff_salinity, "\n")
+cat("Lag at Max Correlation for Salinity:", lag_at_max_salinity, "\n")
+max_coeff_water_level <- max(ccf_water_level$acf)
+lag_at_max_water_level <- ccf_water_level$lag[which.max(ccf_water_level$acf)]
+cat("Max Correlation between Water Level and Tide Height:", max_coeff_water_level, "\n")
+cat("Lag at Max Correlation for Water Level:", lag_at_max_water_level, "\n")
